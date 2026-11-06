@@ -1,0 +1,206 @@
+<!DOCTYPE html><html lang=ko><head><meta charset=UTF-8><meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow"><link rel=icon href="data:,">
+<title>재고관제 · 픽젠</title>
+<style>
+:root{--canvas:#eef1f6;--ink:#1b2a4a;--sub:#5a6782;--rule:#c9d3e3;--blue:#2a5bd7;--red:#d6333f}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--canvas);color:var(--ink);font-family:'Malgun Gothic',sans-serif}
+#gate{min-height:100%;display:flex;align-items:center;justify-content:center;padding:20px}
+.box{background:#fff;border:1px solid var(--rule);border-radius:4px;width:100%;max-width:380px;padding:28px 26px}
+.brand{font-size:13px;color:var(--sub)}
+h1{font-size:22px;margin:4px 0;padding-bottom:12px;border-bottom:2px solid var(--ink)}
+p{color:var(--sub);font-size:13px;line-height:1.6;margin:14px 0;word-break:keep-all}
+label{display:block;font-size:12px;color:var(--sub);margin-bottom:6px}
+#pw{width:100%;font:inherit;font-size:20px;letter-spacing:4px;text-align:center;padding:12px;border:1px solid var(--rule);border-radius:6px;color:var(--ink)}
+#pw:focus{outline:2px solid var(--blue);outline-offset:1px}
+.rem{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px;color:var(--sub)}
+#go{width:100%;margin-top:12px;font:inherit;font-size:15px;font-weight:700;padding:12px;border:0;border-radius:6px;background:var(--blue);color:#fff;cursor:pointer}
+#go:disabled{opacity:.55}
+.msg{min-height:20px;margin-top:10px;font-size:13px;color:var(--red)}
+#app{position:fixed;inset:0;display:none;flex-direction:column}
+#bar{display:flex;align-items:center;gap:10px;background:var(--ink);color:#fff;font-size:12.5px;padding:6px 12px;padding-top:calc(6px + env(safe-area-inset-top,0px))}
+#bar b{font-weight:700}#bar .sp{flex:1}#bar .s{color:#b9c6df}
+#bar button{background:none;border:1px solid rgba(255,255,255,.35);color:#fff;border-radius:5px;padding:3px 9px;font:inherit;cursor:pointer}
+#fr{flex:1;border:0;width:100%;background:#fff}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;display:none;z-index:9;max-width:90%;text-align:center}
+#busy{position:fixed;top:8px;right:12px;font-size:12px;color:#fff;display:none;z-index:9}
+</style></head><body>
+<form id=gate><div class=box>
+ <div class=brand>픽젠 자재관제</div>
+ <h1>사이트 암호를 입력하세요</h1>
+ <p>재고 대시보드·주간재고·불출 내역을 보고, 불출 요청·재고조사·품목 편집도 할 수 있어요. ecount 올리기는 회사 PC에서 해요.</p>
+ <label for=pw>사이트 암호</label>
+ <input id=pw type=password autocomplete=current-password spellcheck=false placeholder="사이트 암호" required>
+ <label class=rem><input type=checkbox id=keep> 이 기기에서 로그인 유지</label>
+ <button id=go>들어가기</button>
+ <div class=msg id=msg role=alert></div>
+</div></form>
+<div id=app><div id=bar><b>재고관제 웹</b><span class=s id=built></span><span class=sp></span><button id=out type=button>로그아웃</button></div><iframe id=fr title="재고관제 화면"></iframe></div>
+<div id=toast role=status></div><div id=busy>불러오는 중…</div>
+<script>
+const C={"url": "https://vpmuydkpicxgylvcexkj.supabase.co", "anon": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZwbXV5ZGtwaWN4Z3lsdmNleGtqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI3MjQxMDgsImV4cCI6MjEwODMwMDEwOH0.wwTuhIBH-KTe0yf2Vs6IVuEvPf0ar93DweAyZGT20jk", "email": "shared@example.com", "prefix": "pixx-stock-view::", "kp": "", "tplv": "b9c70cd539"},$=id=>document.getElementById(id);
+function toast(t){const e=$('toast');e.textContent=t;e.style.display='block';clearTimeout(e._t);e._t=setTimeout(()=>e.style.display='none',4000)}
+window.__toast=toast;
+
+// ── Supabase 로그인(공용 계정, 사이트 암호) ──
+let S=null;   // {access, refresh, exp}
+function saveS(keep){try{const v=JSON.stringify({refresh:S.refresh});sessionStorage.setItem('sb',v);if(keep)localStorage.setItem('sb',v)}catch(_){}}
+function clearS(){S=null;try{sessionStorage.removeItem('sb');localStorage.removeItem('sb')}catch(_){}}
+async function auth(body,grant){
+ const r=await fetch(C.url+'/auth/v1/token?grant_type='+grant,{method:'POST',headers:{apikey:C.anon,'Content-Type':'application/json'},body:JSON.stringify(body)});
+ if(!r.ok)throw new Error(r.status===400?'암호가 맞지 않아요.':r.status===429?'너무 여러 번 시도했어요. 잠시 후 다시 해주세요.':'로그인 서버 오류('+r.status+')');
+ const j=await r.json();S={access:j.access_token,refresh:j.refresh_token,exp:Date.now()+j.expires_in*1000}}
+async function token(){
+ if(S&&S.exp-60000>Date.now())return S.access;
+ if(S&&S.refresh){try{await auth({refresh_token:S.refresh},'refresh_token');saveS(!!localStorage.getItem('sb'));return S.access}catch(e){}}
+ clearS();location.reload();throw new Error('로그인이 끝났어요.')}
+
+// ── Supabase 문서(docs 테이블) ──
+async function rest(method,path,body,prefer){
+ const h={apikey:C.anon,Authorization:'Bearer '+await token(),'Content-Type':'application/json'};if(prefer)h.Prefer=prefer;
+ const r=await fetch(C.url+'/rest/v1/'+path,{method,headers:h,body:body===undefined?undefined:JSON.stringify(body)});
+ const t=await r.text();return {st:r.status,js:t?JSON.parse(t):null}}
+const SNAP={},KP=C.kp||'';   // KP = 테스트용 문서 이름 앞글자(실사이트는 빈 값)
+async function getDoc(key,dflt){
+ const {st,js}=await rest('GET','docs?key=eq.'+encodeURIComponent(KP+key)+'&select=data,ver,updated_at');
+ if(st!==200)throw new Error('데이터를 못 읽었어요('+st+')');
+ return js.length?{data:js[0].data,ver:js[0].ver,at:js[0].updated_at}:{data:JSON.parse(JSON.stringify(dflt)),ver:0,at:null}}
+async function snap(key){const c=SNAP[key];if(c&&Date.now()-c.t<60000)return c.d;const d=(await getDoc('snap:'+key,{})).data;SNAP[key]={t:Date.now(),d};return d}
+class Conflict extends Error{}
+// 읽기 → fn(data) → 버전 조건부 저장. 다른 사람이 먼저 저장했으면 다시 읽고 다시 적용
+async function mutate(key,fn,dflt,expectVer){
+ for(let i=0;i<8;i++){
+  const d=await getDoc(key,dflt);
+  if(expectVer!=null&&String(d.ver)!==String(expectVer))throw new Conflict('다른 사람이 먼저 바꿨어요. 새로고침해서 바뀐 내용을 보고 다시 하세요.');
+  const res=fn(d.data);
+  if(d.ver===0){const {st}=await rest('POST','docs',{key:KP+key,data:d.data,updated_by:'웹'},'return=representation');if(st===409)continue;if(st>=300)throw new Error('저장 실패('+st+')');return res}
+  const {st,js}=await rest('PATCH','docs?key=eq.'+encodeURIComponent(KP+key)+'&ver=eq.'+d.ver,{data:d.data,updated_by:'웹'},'return=representation');
+  if(st===200&&js&&js.length)return res;if(st===200)continue;throw new Error('저장 실패('+st+')')}
+ throw new Conflict('동시 저장이 계속 겹쳐요. 잠시 후 다시 해주세요.')}
+
+// ── 회사 PC 서버와 같은 규칙의 대체 서버 ──
+const pad=n=>String(n).padStart(2,'0'),now=()=>new Date();
+const ts=()=>{const d=now();return pad(d.getMonth()+1)+'/'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes())};
+const ymdhm=()=>{const d=now();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes())};
+function newId(){const d=now();return String(d.getFullYear()).slice(2)+pad(d.getMonth()+1)+pad(d.getDate())+pad(d.getHours())+pad(d.getMinutes())+pad(d.getSeconds())+'-'+Array.from({length:3},()=>'abcdefghijklmnopqrstuvwxyz0123456789'[Math.random()*36|0]).join('')}
+const J=(o,st)=>new Response(JSON.stringify(o),{status:st||200,headers:{'Content-Type':'application/json'}});
+const PC_ONLY=['/push','/open-voucher','/fetch-date','/erp-items-refresh','/backup-all','/restore-all','/master-restore'];
+const TN={prod:'생산불출',move:'창고이동',self:'자가사용'};
+const CODE_OK=/^[A-Za-z0-9_\-]+$/,codes=s=>(s||'').split('+').map(c=>c.trim()).filter(Boolean);
+async function invPayload(wh){
+ const sn=await snap('inv'),names=(sn.warehouses||[]).map(w=>w.name);
+ if(!wh||!names.includes(wh))wh=names.includes(sn.mainWh)?sn.mainWh:(names[0]||'');
+ const c=(await getDoc('inv:'+wh,{counts:{}})).data;
+ return {warehouses:sn.warehouses||[],wh,asof:sn.asof||'',items:(sn.books||{})[wh]||[],counts:c.counts||{},notes:c.notes||{},updated:c.updated||''}}
+async function api(url,opt){
+ const u=new URL(url,location.origin),p=u.pathname,q=u.searchParams,m=(opt.method||'GET').toUpperCase();
+ let b={};try{b=opt.body?JSON.parse(opt.body):{}}catch(_){}if(!b||typeof b!=='object'||Array.isArray(b))b={};
+ try{
+ if(m==='GET'){
+  if(p==='/requests')return J((await getDoc('requests',[])).data.filter(r=>r.status!=='삭제'));
+  if(p==='/sets')return J((await getDoc('sets',[])).data);
+  if(p==='/outrecords')return J(await snap('outrecords'));
+  if(p==='/count-data'){const wk=q.get('wk')||'';if(!/^\d{4}-W\d{2}$/.test(wk))return J({ok:false,msg:'주차 형식이 잘못됐어요'},400);
+   return J((await getDoc('wcount:'+wk,{wk,counts:{},updated:''})).data)}
+  if(p==='/weekly-data'){const it=await getDoc('weekly_items',[]),w=await snap('weekly');return J(Object.assign({items:it.data,itemsVer:String(it.ver)},w))}
+  if(p==='/code-alerts'){const a=await snap('alerts'),ig=new Set((await getDoc('code_alert_ignored',{codes:[]})).data.codes||[]);return J({alerts:(a.codeAlerts||[]).filter(x=>!ig.has(x.old))})}
+  if(p==='/voucher-diffs')return J({diffs:(await snap('alerts')).voucherDiffs||[]});
+  if(p==='/master-data'){const mm=(await getDoc('itemmaster',{map:{}})).data.map||{},s=await snap('master'),E=new Set(s.erp||[]),D=new Set(s.disc||[]),has=!!s.erpHas;
+   return J({rows:Object.entries(mm).map(([pn,v])=>({pn,loc:v.location||'',nm:v.name||'',spec:v.desc||'',reg:has?(E.has(pn)||D.has(pn)):null,disc:has?D.has(pn):false})),source:'Supabase',stock:s.stock||{},stockDate:s.stockDate||'',erpHas:has,erpDate:s.erpDate||''})}
+  if(p==='/inv-data')return J(await invPayload(q.get('wh')));
+  if(p==='/datversion'){const d=await getDoc('snap:dashboard',{});return J({ver:d.at?Date.parse(d.at)/1000:0})}
+  if(p==='/refresh-status'){   // 요청이 아직 담당 PC에 안 잡혔으면 '대기 중', 아니면 담당 PC가 올린 진행 상황
+   const rq=(await getDoc('refresh_request',{})).data,st=(await getDoc('snap:refresh',{running:false})).data;
+   if(rq.at&&rq.at!==rq.handled)return J({running:true,pct:0,done:0,total:st.total||0,steps:st.steps||[],phase:'담당 PC 대기 중'});
+   return J(st)}
+  if(p==='/master-backups'||p==='/backups-all')return J([]);
+  return J({ok:false,msg:'웹에선 안 되는 기능이에요.'},404)}
+ if(PC_ONLY.includes(p))return J({ok:false,msg:'이 기능은 회사 PC 재고관제에서만 돼요(ecount 창을 띄우거나 전체 데이터를 다루는 기능).'},403);
+ if(p==='/refresh'){const at=new Date().toISOString().slice(0,19);await mutate('refresh_request',d=>{d.at=at;d.by='웹'},{});
+  return J({ok:true,queued:true,msg:'담당 PC에 갱신을 요청했어요. 보통 5분 안에 반영돼요(담당 PC가 켜져 있어야 해요).'})}
+ if(p==='/request'){if(!(b.lines||[]).length)return J({ok:false,msg:'담은 품목이 없어요. 품목을 담고 등록하세요.'},400);
+  const id=newId(),t=b.type||'prod';
+  await mutate('requests',rs=>{rs.push({id,ts:ts(),status:'미처리',type:t,damdang:b.damdang||'',recv:b.recv||'',wh_from:b.wh_from||'100',wh_from_name:b.wh_from_name||'',cust:b.cust||'',cust_code:b.cust_code||'',usetype:b.usetype||'',usetype_name:b.usetype_name||'',remark:b.remark||'',lines:b.lines||[]})},[]);
+  return J({ok:true,id,msg:`[${TN[t]||''}] ERP 미처리건으로 등록되었습니다. 자재 전달 후 회사 PC 대시보드에서 진행하세요.`})}
+ if(p==='/req-edit'){if('lines' in b&&!(b.lines||[]).length)return J({ok:false,msg:'품목이 하나도 없으면 저장할 수 없어요. 요청을 지우려면 삭제를 누르세요.'},400);
+  const ok=await mutate('requests',rs=>{const r=rs.find(x=>x.id===b.id);if(!r)return false;
+   if('damdang' in b)r.damdang=b.damdang;if('recv' in b)r.recv=b.recv;if('lines' in b)r.lines=b.lines;
+   for(const k of ['type','wh_from','wh_from_name','cust','cust_code','usetype','usetype_name','remark'])if(k in b)r[k]=b[k];
+   r.ts_edit=ts();return true},[]);
+  return ok?J({ok:true,msg:'수정 저장됨.'}):J({ok:false,msg:'요청 없음'},404)}
+ if(p==='/req-status'){if(!['미처리','작성중','완료'].includes(b.status))return J({ok:false,msg:'상태는 미처리·작성중·완료만 가능해요.'},400);
+  const ok=await mutate('requests',rs=>{const r=rs.find(x=>x.id===b.id);if(!r)return false;r.status=b.status;return true},[]);
+  return ok?J({ok:true}):J({ok:false,msg:'요청 없음'},404)}
+ if(p==='/req-del'){await mutate('requests',rs=>{const i=rs.findIndex(x=>x.id===b.id);if(i>=0)rs.splice(i,1)},[]);return J({ok:true})}
+ if(p==='/set-save'){const name=(b.name||'').trim(),items=b.items||[];
+  if(!name)return J({ok:false,msg:'세트 이름이 필요합니다'},400);if(!items.length)return J({ok:false,msg:'장바구니가 비어 있습니다'},400);
+  await mutate('sets',s=>{const x=s.find(y=>y.name===name);if(x){x.items=items;x.ts=ts()}else s.push({id:newId(),name,items,ts:ts()})},[]);
+  return J({ok:true,msg:`'${name}' 세트 저장됨 (${items.length}품목)`})}
+ if(p==='/set-del'){await mutate('sets',s=>{const i=s.findIndex(x=>x.id===b.id);if(i>=0)s.splice(i,1)},[]);return J({ok:true})}
+ if(p==='/code-alert-ignore'){await mutate('code_alert_ignored',d=>{d.codes=[...new Set([...(d.codes||[]),(b.old||'').trim()])].sort()},{codes:[]});return J({ok:true})}
+ if(p==='/master-save'){const rows=b.rows||[];if(!rows.length)return J({ok:false,msg:'빈 목록은 저장하지 않아요(품목마스터 전체 삭제 방지).'},400);
+  const map={};for(const r of rows){const pn=(r.pn||'').trim();if(pn)map[pn]={location:(r.loc||'').trim(),name:(r.nm||'').trim(),desc:(r.spec||'').trim()}}
+  await mutate('itemmaster',d=>{d.map=map;d.saved=ymdhm()},{map:{}});
+  return J({ok:true,msg:`저장됨 → Supabase · 총 ${Object.keys(map).length}품목 (회사 서버 사본은 1분 안에 자동)`,count:Object.keys(map).length,saved_to:['Supabase']})}
+ if(p==='/master-code-swap'){const o=(b.old||'').trim(),n=(b.new||'').trim();let err=null;
+  await mutate('itemmaster',d=>{const mm=d.map||{};if(!(o in mm)){err='마스터에 없는 코드: '+o;return}if(n in mm){err='새 코드 '+n+' 가 이미 마스터에 있음';return}
+   const out={};for(const [k,v] of Object.entries(mm))if(k===o)out[n]=Object.assign({},v,{name:b.name||v.name||''});else out[k]=v;d.map=out;d.saved=ymdhm()},{map:{}});
+  if(err)return J({ok:false,msg:err},400);
+  await mutate('code_alert_ignored',d=>{d.codes=[...new Set([...(d.codes||[]),o])].sort()},{codes:[]});return J({ok:true,msg:`${o} → ${n} 마스터 코드 교체 완료`})}
+ if(p==='/inv-save'){const wh=b.wh||'';if(!wh)return J({ok:false,msg:'창고 미지정'},400);let cur;
+  await mutate('inv:'+wh,c=>{c.wh=wh;if(b.asof)c.asof=b.asof;c.updated=ymdhm();const cc=c.counts=c.counts||{};
+   for(const [pn,v] of Object.entries(b.counts||{})){if(v==null||v===''){delete cc[pn];continue}const x=Math.round(parseFloat(v));if(!isNaN(x))cc[pn]=x}
+   if(b.notes){const nt=c.notes=c.notes||{};for(const [pn,v] of Object.entries(b.notes)){const s=(v==null?'':String(v).trim());if(s)nt[pn]=s;else delete nt[pn]}}cur=c},{wh,asof:'',updated:'',counts:{}});
+  return J({ok:true,updated:cur.updated,saved:Object.keys(cur.counts||{}).length})}
+ if(p==='/count-save'){const wk=String(b.wk||''),rows=b.rows;   // weekly.save_count 와 같은 규칙
+  if(!/^\d{4}-W\d{2}$/.test(wk))return J({ok:false,msg:'주차 형식이 잘못됐어요'},400);
+  if(!Array.isArray(rows)||!rows.length||rows.length>300)return J({ok:false,msg:'저장할 품목이 없어요'},400);
+  const names=new Set(((await getDoc('weekly_items',[])).data||[]).map(it=>it.name)),nw={};
+  const qty=v=>{if(v==null||v==='')return null;const x=Math.round(parseFloat(v));if(isNaN(x)||x<0||x>1e7)throw new RangeError();return x};
+  try{for(const r of rows){const name=String((r||{}).name||'');if(!names.has(name))return J({ok:false,msg:'보고서에 없는 품목: '+name.slice(0,40)},400);nw[name]=[qty(r.a),qty(r.s)]}}
+  catch(e){return J({ok:false,msg:'수량은 0 이상이어야 해요'},400)}
+  const t=ts();let cur;
+  await mutate('wcount:'+wk,c=>{c.wk=wk;c.updated=t;const cc=c.counts=c.counts||{};
+   for(const [name,[a,s]] of Object.entries(nw)){if(a==null&&s==null)delete cc[name];else cc[name]={a,s,at:t}}cur=c},{wk,counts:{},updated:''});
+  return J(Object.assign({ok:true},cur))}
+ if(p==='/weekly-items'){const items=b.items;
+  if(!Array.isArray(items)||items.length>300)return J({ok:false,msg:'품목 목록 형식이 잘못됐어요'},400);const out=[];
+  for(const it of items){if(!it||typeof it!=='object')return J({ok:false,msg:'품목 목록 형식이 잘못됐어요'},400);
+   const row={};for(const k of ['group','name','assy','sub'])row[k]=String(it[k]||'').trim().slice(0,120);if(!row.name)continue;
+   for(const k of ['assy','sub']){const bad=codes(row[k]).filter(c=>!CODE_OK.test(c));if(bad.length)return J({ok:false,msg:`'${row.name}' 코드에 쓸 수 없는 글자: ${bad.join(', ')}`},400);row[k]=codes(row[k]).join('+')}
+   out.push(row)}
+  if(!out.length)return J({ok:false,msg:'품목이 하나도 없으면 저장하지 않아요(실수로 전체 삭제 방지).'},400);
+  try{await mutate('weekly_items',d=>{d.length=0;d.push(...out)},[],b.ver)}catch(e){if(e instanceof Conflict)return J({ok:false,msg:'다른 사람이 먼저 품목을 바꿨어요. 새로고침해서 바뀐 내용을 보고 다시 편집하세요.'},409);throw e}
+  return J({ok:true,items:out,ver:String((await getDoc('weekly_items',[])).ver)})}
+ return J({ok:false,msg:'not found'},404)
+ }catch(e){return J({ok:false,msg:(e instanceof Conflict?'':'저장·조회 실패: ')+e.message},e instanceof Conflict?409:500)}}
+window.__api=(u,o)=>api(u,o);
+
+// ── 화면 ──
+let TPL=null,rendering=false,curHref='/';
+// 화면 안에서 '새로고침'(location.reload)하면 같은 옛 화면이 다시 뜨므로 → 최신 데이터로 다시 그림
+$('fr').addEventListener('load',()=>{if(rendering){rendering=false;return}for(const k in SNAP)delete SNAP[k];window.__show(curHref)});
+async function loadTpl(){if(!TPL)TPL=await (await fetch('templates.json?v='+C.tplv)).json();return TPL}
+const fill=(h,d)=>h.replace('/*DATA*/null',()=>JSON.stringify(d).replace(/<\/script/gi,'<\\/script'));
+window.__show=async function(href){
+ const u=new URL(href,location.origin),p=u.pathname,T=await loadTpl();
+ if(!T[p]){toast('이 화면은 회사 PC 재고관제에서 볼 수 있어요.');return}
+ $('busy').style.display='block';
+ try{let h=T[p];
+  if(p==='/'){const d=await snap('dashboard');h=fill(h,d);$('built').textContent=(d.genTime||'')+' 데이터'}
+  else if(p==='/issue'){const d=Object.assign({},await snap('issue'));const id=u.searchParams.get('edit');
+   d.edit=id?((await getDoc('requests',[])).data.find(r=>r.id===id)||null):null;h=fill(h,d)}
+  else if(p==='/inventory')h=fill(h,await invPayload(u.searchParams.get('wh')));
+  curHref=p+u.search;rendering=true;$('fr').srcdoc=h;try{history.replaceState(null,'','#'+p+u.search)}catch(_){}}
+ catch(e){toast('화면을 못 불러왔어요: '+e.message)}finally{$('busy').style.display='none'}};
+
+async function enter(){$('gate').style.display='none';$('app').style.display='flex';
+ const h=(location.hash||'#/').slice(1);await window.__show(h||'/')}
+$('gate').onsubmit=async e=>{e.preventDefault();$('go').disabled=true;$('msg').textContent='확인 중…';
+ try{await auth({email:C.email,password:C.prefix+$('pw').value.trim().toUpperCase()},'password');saveS($('keep').checked);$('msg').textContent='';await enter()}
+ catch(err){$('msg').textContent=err.message;$('go').disabled=false}};
+$('out').onclick=()=>{clearS();location.replace(location.pathname)};
+(async()=>{let v=null;try{v=JSON.parse(sessionStorage.getItem('sb')||localStorage.getItem('sb')||'null')}catch(_){}
+ if(v&&v.refresh){S={refresh:v.refresh,exp:0};try{await token();await enter()}catch(_){$('gate').style.display='flex'}}})();
+</script></body></html>
